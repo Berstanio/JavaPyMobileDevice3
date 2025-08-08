@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 
 public class PyMobileDevice3IPC implements Closeable {
 
@@ -108,6 +109,31 @@ public class PyMobileDevice3IPC implements Closeable {
             commandResults.remove(id);
 
             future.complete(deviceInfos);
+        });
+
+        return future;
+    }
+
+    public CompletableFuture<String> installApp(String path, IntConsumer progressCallback) {
+        int id = commandId.getAndIncrement();
+        JSONObject object = new JSONObject();
+        object.put("id", id);
+        object.put("command", "install_app");
+        object.put("mode", "upgrade");
+        object.put("path", path);
+
+        if (!writeQueue.offer(object.toString()))
+            return CompletableFuture.completedFuture(null);
+
+        CompletableFuture<String> future = new CompletableFuture<>();
+        commandResults.put(id, jsonObject -> {
+            if (jsonObject.has("progress")) {
+                if (progressCallback != null)
+                    progressCallback.accept(jsonObject.getInt("progress"));
+            } else {
+                String bundlePath = jsonObject.getString("result");
+                future.complete(bundlePath);
+            }
         });
 
         return future;
