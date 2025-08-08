@@ -132,6 +132,8 @@ public class PyMobileDevice3IPC implements Closeable {
                     progressCallback.accept(jsonObject.getInt("progress"));
             } else {
                 String bundlePath = jsonObject.getString("result");
+                commandResults.remove(id);
+
                 future.complete(bundlePath);
             }
         });
