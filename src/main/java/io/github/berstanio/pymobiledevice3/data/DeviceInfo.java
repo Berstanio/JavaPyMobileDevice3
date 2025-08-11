@@ -27,7 +27,7 @@ public class DeviceInfo {
         return new DeviceInfo(jsonObject.getString("Identifier"), jsonObject.getString("DeviceClass"),
                 jsonObject.getString("DeviceName"), jsonObject.getString("BuildVersion"),
                 jsonObject.getString("ProductVersion"), jsonObject.getString("ProductType"),
-                jsonObject.getString("UniqueDeviceID"), ConnectionType.valueOf(jsonObject.getString("ConnectionType")));
+                jsonObject.getString("UniqueDeviceID"), ConnectionType.fromString(jsonObject.getString("ConnectionType")));
     }
 
     public String getIdentifier() {

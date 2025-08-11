@@ -27,6 +27,17 @@ def list_devices(id, writer):
 
     write_reply(reply, writer)
 
+def list_devices_udid(id, writer):
+    devices = []
+    for device in usbmux.list_devices():
+        devices.append(device.serial)
+
+    reply = {"id": id, "state": "completed", "result": devices}
+
+    print("Collected results: " + str(reply))
+
+    write_reply(reply, writer)
+
 def get_device(id, device_id, writer):
     try:
         with create_using_usbmux(device_id, autopair=False) as lockdown:
@@ -97,6 +108,9 @@ def main():
                 sys.exit(0)
             elif command_type == "list_devices":
                 list_devices(id, writer)
+                continue
+            elif command_type == "list_devices_udid":
+                list_devices_udid(id, writer)
                 continue
             elif command_type == "get_device":
                 device_id = res['device_id'] if 'device_id' in res else None

@@ -155,6 +155,21 @@ public class PyMobileDevice3IPC implements Closeable {
         });
     }
 
+    public CompletableFuture<String[]> listDevicesUDID() {
+        JSONObject object = new JSONObject();
+        object.put("command", "list_devices_udid");
+
+        return createRequest(object, (future, jsonObject) -> {
+            JSONArray jsonArray = jsonObject.getJSONArray("result");
+            String[] deviceInfos = new String[jsonArray.length()];
+            for (int i = 0; i < deviceInfos.length; i++) {
+                deviceInfos[i] = jsonArray.getString(i);
+            }
+
+            future.complete(deviceInfos);
+        });
+    }
+
     /**
      * @param uuid The uuid of the requested device - or null for the first available device
      * @return A future that will provide the result - null if the device is not connected
@@ -200,12 +215,16 @@ public class PyMobileDevice3IPC implements Closeable {
         });
     }
 
-    public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
+    public static void main(String[] args) throws IOException {
         try (PyMobileDevice3IPC ipc = new PyMobileDevice3IPC()) {
             CompletableFuture<String> future = ipc.installApp(null, "/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app", InstallMode.UPGRADE, progress -> System.out.println("Progress: " + progress + "%"));
 
-            System.out.println("Installed to: " +  future.get());
+            System.out.println("Installed to: " +  future.join());
         }
+    }
+
+    public boolean isAlive() {
+        return !destroyed;
     }
 
     @Override
