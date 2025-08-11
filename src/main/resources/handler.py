@@ -35,9 +35,9 @@ def install_app(id, lockdown_client, path, mode, writer):
             writer.flush()
             return
 
-        if mode == "install":
+        if mode == "INSTALL":
             installer.install(path, options=options, handler=progress_handler)
-        elif mode == "upgrade":
+        elif mode == "UPGRADE":
             installer.upgrade(path, options=options, handler=progress_handler)
         else:
             raise RuntimeError(f"Invalid mode [{mode}]")

@@ -2,6 +2,7 @@ package io.github.berstanio.pymobiledevice3.ipc;
 
 import io.github.berstanio.pymobiledevice3.data.ConnectionType;
 import io.github.berstanio.pymobiledevice3.data.DeviceInfo;
+import io.github.berstanio.pymobiledevice3.data.InstallMode;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -114,13 +115,21 @@ public class PyMobileDevice3IPC implements Closeable {
         return future;
     }
 
-    public CompletableFuture<String> installApp(String path, IntConsumer progressCallback) {
+    /**
+     * @param deviceInfo The device to install to. null means first device found
+     * @param path .app bundle path
+     * @param installMode The installation mode. INSTALL/UPGRADE
+     * @param progressCallback A callback that will be run during installation. No thread guarantees made
+     */
+    public CompletableFuture<String> installApp(DeviceInfo deviceInfo, String path, InstallMode installMode, IntConsumer progressCallback) {
         int id = commandId.getAndIncrement();
         JSONObject object = new JSONObject();
         object.put("id", id);
         object.put("command", "install_app");
-        object.put("mode", "upgrade");
+        object.put("mode", installMode.name());
         object.put("path", path);
+        if (deviceInfo != null)
+            object.put("device_id", deviceInfo.getUniqueDeviceId());
 
         if (!writeQueue.offer(object.toString()))
             return CompletableFuture.completedFuture(null);
