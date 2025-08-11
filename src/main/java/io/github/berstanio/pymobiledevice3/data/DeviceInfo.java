@@ -1,5 +1,7 @@
 package io.github.berstanio.pymobiledevice3.data;
 
+import org.json.JSONObject;
+
 public class DeviceInfo {
     private final String identifier;
     private final String deviceClass;
@@ -19,6 +21,13 @@ public class DeviceInfo {
         this.productType = productType;
         this.uniqueDeviceId = uniqueDeviceId;
         this.connectionType = connectionType;
+    }
+
+    public static DeviceInfo fromJson(JSONObject jsonObject) {
+        return new DeviceInfo(jsonObject.getString("Identifier"), jsonObject.getString("DeviceClass"),
+                jsonObject.getString("DeviceName"), jsonObject.getString("BuildVersion"),
+                jsonObject.getString("ProductVersion"), jsonObject.getString("ProductType"),
+                jsonObject.getString("UniqueDeviceID"), ConnectionType.valueOf(jsonObject.getString("ConnectionType")));
     }
 
     public String getIdentifier() {
