@@ -197,6 +197,8 @@ public class PyMobileDevice3IPC implements Closeable {
      * @param progressCallback A callback that will be run during installation. No thread guarantees made. May be null
      */
     public CompletableFuture<String> installApp(DeviceInfo deviceInfo, String path, InstallMode installMode, IntConsumer progressCallback) {
+        if (installMode == InstallMode.NONE)
+            throw new IllegalArgumentException("InstallMode cannot be NONE");
         JSONObject object = new JSONObject();
         object.put("command", "install_app");
         object.put("mode", installMode.name());
