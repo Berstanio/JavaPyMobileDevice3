@@ -1,5 +1,6 @@
 plugins {
     id("java")
+    id("java-library")
 }
 
 group = "io.github.berstanio"
@@ -9,8 +10,13 @@ repositories {
     mavenCentral()
 }
 
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
 dependencies {
-    implementation("org.json:json:20250517")
+    api("org.json:json:20250517")
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
 }
