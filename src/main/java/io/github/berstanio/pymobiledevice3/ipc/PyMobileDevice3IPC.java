@@ -19,7 +19,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -234,11 +233,13 @@ public class PyMobileDevice3IPC implements Closeable {
 
     public static void main(String[] args) throws IOException {
         try (PyMobileDevice3IPC ipc = new PyMobileDevice3IPC()) {
-            JSONObject object = ipc.decodePList(new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app/Info.plist")).join();
-            System.out.println(object.getString("CFBundleExecutable"));
-            //CompletableFuture<String> future = ipc.installApp(null, new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app"), InstallMode.UPGRADE, progress -> System.out.println("Progress: " + progress + "%"));
+            //JSONObject object = ipc.decodePList(new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app/Info.plist")).join();
+            //System.out.println(object.getString("CFBundleExecutable"));
+            //for (DeviceInfo info : ipc.listDevices().join())
 
-            //System.out.println("Installed to: " +  future.join());
+            CompletableFuture<String> future = ipc.installApp(null, new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app"), InstallMode.UPGRADE, progress -> System.out.println("Progress: " + progress + "%"));
+
+            System.out.println("Installed to: " +  future.join());
         }
     }
 
@@ -250,17 +251,21 @@ public class PyMobileDevice3IPC implements Closeable {
     public void close() {
         try {
             writeThread.interrupt();
-            readThread.interrupt();
+            writeThread.join();
+
             socket.close();
             serverSocket.close();
             process.destroyForcibly();
             commandResults.clear();
             writeQueue.clear();
 
+            readThread.interrupt();
+            readThread.join();
+
             futures.values().forEach(completableFuture -> completableFuture.cancel(true));
             futures.clear();
 
             destroyed = true;
-        } catch (IOException ignored) {}
+        } catch (IOException | InterruptedException ignored) {}
     }
 }
