@@ -8,6 +8,7 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.Closeable;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
@@ -26,7 +27,7 @@ import java.util.function.IntConsumer;
 
 public class PyMobileDevice3IPC implements Closeable {
 
-    private static final boolean DEBUG = System.getProperty("java.pymobiledevice3.debug") != null;
+    private static final boolean DEBUG = System.getProperty("java.pymobiledevice3.debug") == null;
 
     private final Process process;
     private final ServerSocket serverSocket;
@@ -90,7 +91,7 @@ public class PyMobileDevice3IPC implements Closeable {
                     if (jsonObject.get("state").equals("failed")) {
                         String request = jsonObject.getString("request");
                         CompletableFuture<?> future = futures.remove(request);
-                        future.completeExceptionally(new PyMobileDevice3Error(jsonObject.getString("error")));
+                        future.completeExceptionally(new PyMobileDevice3Error(jsonObject.getString("error"), jsonObject.getString("backtrace")));
                         continue;
                     }
                     int id = jsonObject.getInt("id");
@@ -196,13 +197,16 @@ public class PyMobileDevice3IPC implements Closeable {
      * @param installMode The installation mode. INSTALL/UPGRADE
      * @param progressCallback A callback that will be run during installation. No thread guarantees made. May be null
      */
-    public CompletableFuture<String> installApp(DeviceInfo deviceInfo, String path, InstallMode installMode, IntConsumer progressCallback) {
+    public CompletableFuture<String> installApp(DeviceInfo deviceInfo, File path, InstallMode installMode, IntConsumer progressCallback) {
         if (installMode == InstallMode.NONE)
             throw new IllegalArgumentException("InstallMode cannot be NONE");
+        if (!path.exists() || !path.isDirectory())
+            throw new IllegalArgumentException("Path " + path.getAbsolutePath() + " does not point to directory");
+
         JSONObject object = new JSONObject();
         object.put("command", "install_app");
-        object.put("mode", installMode.name());
-        object.put("path", path);
+        object.put("install_mode", installMode.name());
+        object.put("app_path", path.getAbsolutePath());
         if (deviceInfo != null)
             object.put("device_id", deviceInfo.getUniqueDeviceId());
 
@@ -217,11 +221,24 @@ public class PyMobileDevice3IPC implements Closeable {
         });
     }
 
+    public CompletableFuture<JSONObject> decodePList(File path) {
+        if (!path.exists() || path.isDirectory())
+            throw new IllegalArgumentException("Path " + path.getAbsolutePath() + " does not point to file");
+        JSONObject object = new JSONObject();
+        object.put("command", "decode_plist");
+        object.put("plist_path", path.getAbsolutePath() + "f");
+        return createRequest(object, (future, jsonObject) -> {
+            future.complete(jsonObject.getJSONObject("result"));
+        });
+    }
+
     public static void main(String[] args) throws IOException {
         try (PyMobileDevice3IPC ipc = new PyMobileDevice3IPC()) {
-            CompletableFuture<String> future = ipc.installApp(null, "/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app", InstallMode.UPGRADE, progress -> System.out.println("Progress: " + progress + "%"));
+            JSONObject object = ipc.decodePList(new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app/Info.plist")).join();
+            System.out.println(object.getString("CFBundleExecutable"));
+            //CompletableFuture<String> future = ipc.installApp(null, new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app"), InstallMode.UPGRADE, progress -> System.out.println("Progress: " + progress + "%"));
 
-            System.out.println("Installed to: " +  future.join());
+            //System.out.println("Installed to: " +  future.join());
         }
     }
 
@@ -237,9 +254,11 @@ public class PyMobileDevice3IPC implements Closeable {
             socket.close();
             serverSocket.close();
             process.destroyForcibly();
-            futures.clear();
             commandResults.clear();
             writeQueue.clear();
+
+            futures.values().forEach(completableFuture -> completableFuture.cancel(true));
+            futures.clear();
 
             destroyed = true;
         } catch (IOException ignored) {}

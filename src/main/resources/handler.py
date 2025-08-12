@@ -1,5 +1,6 @@
 import json
 import sys
+import traceback
 from pathlib import Path
 
 import pymobiledevice3.usbmux as usbmux
@@ -7,6 +8,7 @@ from pymobiledevice3.exceptions import *
 from pymobiledevice3.services.installation_proxy import InstallationProxyService
 from pymobiledevice3.usbmux import *
 from pymobiledevice3.lockdown import create_using_usbmux
+import plistlib
 
 def write_reply(reply: dict, writer):
     writer.write(str(reply))
@@ -77,6 +79,13 @@ def install_app(id, lockdown_client, path, mode, writer):
 
         print("Installed bundle: " + str(bundle_identifier))
 
+def decode_plist(id, path, writer):
+    with open(path, 'rb') as f:
+        plist_data = plistlib.load(f)
+        reply = {"id": id, "state": "completed", "result": plist_data}
+        write_reply(reply, writer)
+        return
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python handler.py <port>")
@@ -116,13 +125,16 @@ def main():
                 device_id = res['device_id'] if 'device_id' in res else None
                 get_device(id, device_id, writer)
                 continue
+            elif command_type == "decode_plist":
+                decode_plist(id, res['plist_path'], writer)
+                continue
 
             # Now come the device targetted functions
             device_id = res['device_id'] if 'device_id' in res else None
             with create_using_usbmux(device_id) as lockdown:
                 if command_type == "install_app":
-                    install_app(id, lockdown, res['path'], res['mode'], writer)
+                    install_app(id, lockdown, res['app_path'], res['install_mode'], writer)
         except Exception as e:
-            reply = {"request": command, "state": "failed", "error": repr(e)}
+            reply = {"request": command, "state": "failed", "error": repr(e), "backtrace": traceback.format_exc()}
             write_reply(reply, writer)
 main()
