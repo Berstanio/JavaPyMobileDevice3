@@ -32,6 +32,7 @@ public class PyMobileDevice3IPC implements Closeable {
 
     private static final boolean DEBUG = System.getProperty("java.pymobiledevice3.debug") != null;
 
+    private final PyInstallation installation;
     private final Process process;
     private final ServerSocket serverSocket;
     private final Socket socket;
@@ -48,6 +49,7 @@ public class PyMobileDevice3IPC implements Closeable {
     private boolean destroyed = false;
 
     public PyMobileDevice3IPC(PyInstallation installation) throws IOException {
+        this.installation = installation;
         serverSocket = new ServerSocket(0, 50, InetAddress.getByName("localhost"));
         int port = serverSocket.getLocalPort();
         ProcessBuilder pb = new ProcessBuilder()
@@ -255,7 +257,7 @@ public class PyMobileDevice3IPC implements Closeable {
         object.put("port", port);
         return createRequest(object, (future, jsonObject) -> {
             if (jsonObject.getString("state").equals("failed_tunneld")) {
-                future.completeExceptionally(new PyMobileDevice3Error("No tunneld instance for device " + info.getUniqueDeviceId() + " found.\nHave you started the service with `sudo python3 -m pymobiledevice3 remote tunneld`?"));
+                future.completeExceptionally(new PyMobileDevice3Error("No tunneld instance for device " + info.getUniqueDeviceId() + " found.\nHave you started the service with `sudo " + installation.getPythonExecutable().getAbsolutePath() + " -m pymobiledevice3 remote tunneld`?"));
                 return;
             }
             JSONObject result = jsonObject.getJSONObject("result");
