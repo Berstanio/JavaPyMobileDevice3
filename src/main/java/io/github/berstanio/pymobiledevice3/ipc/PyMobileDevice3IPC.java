@@ -5,6 +5,8 @@ import io.github.berstanio.pymobiledevice3.data.PyMobileDevice3Error;
 import io.github.berstanio.pymobiledevice3.data.DeviceInfo;
 import io.github.berstanio.pymobiledevice3.data.InstallMode;
 import io.github.berstanio.pymobiledevice3.data.USBMuxForwarder;
+import io.github.berstanio.pymobiledevice3.venv.PyInstallation;
+import io.github.berstanio.pymobiledevice3.venv.PyInstallationHandler;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -45,11 +47,11 @@ public class PyMobileDevice3IPC implements Closeable {
 
     private boolean destroyed = false;
 
-    public PyMobileDevice3IPC() throws IOException {
+    public PyMobileDevice3IPC(PyInstallation installation) throws IOException {
         serverSocket = new ServerSocket(0, 50, InetAddress.getByName("localhost"));
         int port = serverSocket.getLocalPort();
         ProcessBuilder pb = new ProcessBuilder()
-                .command("python3" , "-u", "/Volumes/ExternalSSD/IdeaProjects/JavaPyMobileDevice3/src/main/resources/handler.py", String.valueOf(port));
+                .command(installation.getPythonExecutable().getAbsolutePath() , "-u", installation.getHandler().getAbsolutePath(), String.valueOf(port));
 
         if (DEBUG)
             pb.inheritIO();
@@ -293,7 +295,8 @@ public class PyMobileDevice3IPC implements Closeable {
     }
 
     public static void main(String[] args) throws IOException {
-        try (PyMobileDevice3IPC ipc = new PyMobileDevice3IPC()) {
+        PyInstallation installation = PyInstallationHandler.install(new File("build/pyenv/"));
+        try (PyMobileDevice3IPC ipc = new PyMobileDevice3IPC(installation)) {
             //JSONObject object = ipc.decodePList(new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app/Info.plist")).join();
             //System.out.println(object.getString("CFBundleExecutable"));
             //for (DeviceInfo info : ipc.listDevices().join())
@@ -319,6 +322,7 @@ public class PyMobileDevice3IPC implements Closeable {
             socket.close();
             serverSocket.close();
             process.destroyForcibly();
+            process.onExit().join();
             commandResults.clear();
             writeQueue.clear();
 
