@@ -1,8 +1,10 @@
 package io.github.berstanio.pymobiledevice3.ipc;
 
+import io.github.berstanio.pymobiledevice3.data.DebugServerConnection;
 import io.github.berstanio.pymobiledevice3.data.PyMobileDevice3Error;
 import io.github.berstanio.pymobiledevice3.data.DeviceInfo;
 import io.github.berstanio.pymobiledevice3.data.InstallMode;
+import io.github.berstanio.pymobiledevice3.data.USBMuxForwarder;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -26,7 +28,7 @@ import java.util.function.IntConsumer;
 
 public class PyMobileDevice3IPC implements Closeable {
 
-    private static final boolean DEBUG = System.getProperty("java.pymobiledevice3.debug") == null;
+    private static final boolean DEBUG = System.getProperty("java.pymobiledevice3.debug") != null;
 
     private final Process process;
     private final ServerSocket serverSocket;
@@ -170,6 +172,11 @@ public class PyMobileDevice3IPC implements Closeable {
         });
     }
 
+    public CompletableFuture<DeviceInfo> getDevice()
+    {
+        return getDevice(null);
+    }
+
     /**
      * @param uuid The uuid of the requested device - or null for the first available device
      * @return A future that will provide the result - null if the device is not connected
@@ -191,7 +198,7 @@ public class PyMobileDevice3IPC implements Closeable {
     }
 
     /**
-     * @param deviceInfo The device to install to. null means first device found
+     * @param deviceInfo The device to install to.
      * @param path .app bundle path
      * @param installMode The installation mode. INSTALL/UPGRADE
      * @param progressCallback A callback that will be run during installation. No thread guarantees made. May be null
@@ -206,8 +213,7 @@ public class PyMobileDevice3IPC implements Closeable {
         object.put("command", "install_app");
         object.put("install_mode", installMode.name());
         object.put("app_path", path.getAbsolutePath());
-        if (deviceInfo != null)
-            object.put("device_id", deviceInfo.getUniqueDeviceId());
+        object.put("device_id", deviceInfo.getUniqueDeviceId());
 
         return createRequest(object, (future, jsonObject) -> {
             if (jsonObject.has("progress")) {
@@ -225,9 +231,64 @@ public class PyMobileDevice3IPC implements Closeable {
             throw new IllegalArgumentException("Path " + path.getAbsolutePath() + " does not point to file");
         JSONObject object = new JSONObject();
         object.put("command", "decode_plist");
-        object.put("plist_path", path.getAbsolutePath() + "f");
+        object.put("plist_path", path.getAbsolutePath());
         return createRequest(object, (future, jsonObject) -> {
             future.complete(jsonObject.getJSONObject("result"));
+        });
+    }
+
+    public CompletableFuture<Void> autoMountImage(DeviceInfo info) {
+        JSONObject object = new JSONObject();
+        object.put("command", "auto_mount_image");
+        object.put("device_id", info.getUniqueDeviceId());
+        return createRequest(object, (future, jsonObject) -> {
+            future.complete(null);
+        });
+    }
+
+    public CompletableFuture<DebugServerConnection> debugServerConnect(DeviceInfo info, int port) {
+        JSONObject object = new JSONObject();
+        object.put("command", "debugserver_connect");
+        object.put("device_id", info.getUniqueDeviceId());
+        object.put("port", port);
+        return createRequest(object, (future, jsonObject) -> {
+            if (jsonObject.getString("state").equals("failed_tunneld")) {
+                future.completeExceptionally(new PyMobileDevice3Error("No tunneld instance for device " + info.getUniqueDeviceId() + " found"));
+                return;
+            }
+            JSONObject result = jsonObject.getJSONObject("result");
+            future.complete(new DebugServerConnection(info, result.getString("host"), result.getInt("port")));
+        });
+    }
+
+    public CompletableFuture<Void> debugServerClose(DebugServerConnection connection) {
+        JSONObject object = new JSONObject();
+        object.put("command", "debugserver_close");
+        object.put("port", connection.getPort());
+        return createRequest(object, (future, jsonObject) -> {
+            future.complete(null);
+        });
+    }
+
+    public CompletableFuture<USBMuxForwarder> usbMuxForwarderCreate(DeviceInfo info, int remotePort, int localPort) {
+        JSONObject object = new JSONObject();
+        object.put("command", "usbmux_forwarder_open");
+        object.put("device_id", info.getUniqueDeviceId());
+        object.put("remote_port", remotePort);
+        object.put("local_port", localPort);
+
+        return createRequest(object, (future, jsonObject) -> {
+            JSONObject result = jsonObject.getJSONObject("result");
+            future.complete(new USBMuxForwarder(info, result.getInt("remote_port"), result.getInt("local_port"), result.getString("host")));
+        });
+    }
+
+    public CompletableFuture<Void> usbMuxForwarderClose(USBMuxForwarder connection) {
+        JSONObject object = new JSONObject();
+        object.put("command", "usbmux_forwarder_close");
+        object.put("local_port", connection.getLocalPort());
+        return createRequest(object, (future, jsonObject) -> {
+            future.complete(null);
         });
     }
 
@@ -237,9 +298,11 @@ public class PyMobileDevice3IPC implements Closeable {
             //System.out.println(object.getString("CFBundleExecutable"));
             //for (DeviceInfo info : ipc.listDevices().join())
 
-            CompletableFuture<String> future = ipc.installApp(null, new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app"), InstallMode.UPGRADE, progress -> System.out.println("Progress: " + progress + "%"));
+            //CompletableFuture<String> future = ipc.installApp(ipc.getDevice(null).join(), new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app"), InstallMode.UPGRADE, progress -> System.out.println("Progress: " + progress + "%"));
+            DeviceInfo info = ipc.getDevice(null).join();
+            DebugServerConnection connection = ipc.debugServerConnect(info, 0).join();
 
-            System.out.println("Installed to: " +  future.join());
+            ipc.debugServerClose(connection).join();
         }
     }
 
