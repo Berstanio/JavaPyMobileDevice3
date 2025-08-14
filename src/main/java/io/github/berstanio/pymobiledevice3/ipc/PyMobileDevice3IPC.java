@@ -257,7 +257,7 @@ public class PyMobileDevice3IPC implements Closeable {
         object.put("port", port);
         return createRequest(object, (future, jsonObject) -> {
             if (jsonObject.getString("state").equals("failed_tunneld")) {
-                future.completeExceptionally(new PyMobileDevice3Error("No tunneld instance for device " + info.getUniqueDeviceId() + " found.\nHave you started the service with `sudo " + installation.getPythonExecutable().getAbsolutePath() + " -m pymobiledevice3 remote tunneld`?"));
+                future.completeExceptionally(new PyMobileDevice3Error("No tunneld instance for device " + info.getUniqueDeviceId() + " found. Have you started the service with `sudo " + installation.getPythonExecutable().getAbsolutePath() + " -m pymobiledevice3 remote tunneld`?"));
                 return;
             }
             JSONObject result = jsonObject.getJSONObject("result");
