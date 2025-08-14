@@ -1,5 +1,8 @@
+import atexit
 import json
+import os
 import queue
+import select
 import sys
 import threading
 import traceback
@@ -23,7 +26,7 @@ class WriteDispatcher:
     def __init__(self):
         self.write_queue = queue.Queue()
         self.shutdown_event = threading.Event()
-        self.write_thread = threading.Thread(target=self._write_worker, daemon=True)
+        self.write_thread = threading.Thread(target=self._write_worker, daemon=True, name="Python-WriteDispatcher")
         self.write_thread.start()
 
     def _write_worker(self):
@@ -54,10 +57,71 @@ class WriteDispatcher:
         self.write_queue.put(None)
         self.write_thread.join()
 
+class ReadDispatcher:
+    def __init__(self):
+        self.socket_list = []
+        self.addresses = {}
+        self.read_files = {}
+        self.write_files = {}
+        self.shutdown_event = threading.Event()
+        self.read_thread = threading.Thread(target=self._read_worker, daemon=True, name="Python-ReadDispatcher")
+        self.read_thread.start()
+
+    def _read_worker(self):
+        try:
+            while True:
+                try:
+                    ready_sockets, _, exception_sockets = select.select(self.socket_list, [], self.socket_list, 1.0)
+
+                    if self.shutdown_event.is_set():
+                        for sock in self.socket_list:
+                            self.remove_socket(sock)
+                        return
+
+                    for exception_socket in exception_sockets:
+                        self.remove_socket(exception_socket)
+
+                    for ready_socket in ready_sockets:
+                        reader = self.read_files[ready_socket]
+                        writer = self.write_files[ready_socket]
+                        command = reader.readline().strip()
+                        if not command:
+                            self.remove_socket(ready_socket)
+                            continue
+                        print("Received command: {}".format(command))
+
+                        handle_command(command, writer)
+
+                except Exception as e:
+                    print(f"Read thread error: {e}")
+                    continue
+        finally:
+            self.shutdown_event.set()
+
+    def remove_socket(self, sock):
+        self.socket_list.remove(sock)
+        self.read_files.pop(sock).close()
+        self.write_files.pop(sock).close()
+        address = self.addresses.pop(sock)
+        sock.close()
+        print(f"Disconnected {address}")
+
+    def add_socket(self, sock, address):
+        self.read_files[sock] = sock.makefile('r')
+        self.write_files[sock] = sock.makefile('w')
+        self.addresses[sock] = address
+        self.socket_list.append(sock)
+        print(f"Connected {address}")
+
+
+    def shutdown(self):
+        self.shutdown_event.set()
+
 
 active_debug_server: dict[int, tuple[LockdownTcpForwarder, Thread]] = {}
 active_usbmux_forwarder: dict[int, tuple[UsbmuxTcpForwarder, Thread]] = {}
 write_dispatcher = WriteDispatcher()
+read_dispatcher = ReadDispatcher()
 
 
 def list_devices(id, writer):
@@ -221,75 +285,79 @@ def usbmux_forward_close(id, local_port, writer):
     write_dispatcher.write_reply(writer, reply)
 
 
+def handle_command(command, writer):
+    try:
+        res = json.loads(command)
+        id = res['id']
+
+        command_type = res['command']
+        if command_type == "exit":
+            print("Exciting by request")
+            atexit._run_exitfuncs()
+            os._exit(0)
+        elif command_type == "list_devices":
+            list_devices(id, writer)
+            return
+        elif command_type == "list_devices_udid":
+            list_devices_udid(id, writer)
+            return
+        elif command_type == "get_device":
+            device_id = res['device_id'] if 'device_id' in res else None
+            get_device(id, device_id, writer)
+            return
+        elif command_type == "decode_plist":
+            decode_plist(id, res['plist_path'], writer)
+            return
+        elif command_type == "debugserver_close":
+            debugserver_close(id, res['port'], writer)
+            return
+        elif command_type == "usbmux_forwarder_open":
+            usbmux_forward_open(id, res['device_id'], res['remote_port'], res['local_port'], writer)
+            return
+        elif command_type == "usbmux_forwarder_close":
+            usbmux_forward_close(id, res['local_port'], writer)
+            return
+
+        # Now come the device targetted functions
+        device_id = res['device_id']
+        with create_using_usbmux(device_id) as lockdown:
+            if command_type == "install_app":
+                install_app(id, lockdown, res['app_path'], res['install_mode'], writer)
+                return
+            elif command_type == "auto_mount_image":
+                auto_mount_image(id, lockdown, writer)
+                return
+            elif command_type == "debugserver_connect":
+                port = res['port'] if 'port' in res else 0
+                debugserver_connect(id, lockdown, port, writer)
+                return
+
+    except Exception as e:
+        reply = {"request": command, "state": "failed", "error": repr(e), "backtrace": traceback.format_exc()}
+        write_dispatcher.write_reply(writer, reply)
+
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python handler.py <port>")
+        print("Usage: python handler.py <port_file>")
         sys.exit(1)
 
-    port = int(sys.argv[1])
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(('localhost', 0))
+    server.listen(5)
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect(('localhost', port))
+    port = server.getsockname()[1]
+    path = sys.argv[1]
 
-    reader = sock.makefile('r')
-    writer = sock.makefile('w')
+    with open(path, "w") as f:
+        f.write(str(port))
 
+    print(f"Written port {port} to file {path}")
+
+    atexit.register(os.remove, path)
+    print(f"Start listening on port {port}")
     while True:
-        command = reader.readline().strip()
-        if not command:
-            break
-        print("Received command: {}".format(command))
-
-        try:
-            res = json.loads(command)
-            id = res['id']
-
-            command_type = res['command']
-            if command_type == "exit":
-                write_dispatcher.shutdown()
-                reader.close()
-                writer.close()
-                sock.close()
-                sys.exit(0)
-            elif command_type == "list_devices":
-                list_devices(id, writer)
-                continue
-            elif command_type == "list_devices_udid":
-                list_devices_udid(id, writer)
-                continue
-            elif command_type == "get_device":
-                device_id = res['device_id'] if 'device_id' in res else None
-                get_device(id, device_id, writer)
-                continue
-            elif command_type == "decode_plist":
-                decode_plist(id, res['plist_path'], writer)
-                continue
-            elif command_type == "debugserver_close":
-                debugserver_close(id, res['port'], writer)
-                continue
-            elif command_type == "usbmux_forwarder_open":
-                usbmux_forward_open(id, res['device_id'], res['remote_port'], res['local_port'], writer)
-                continue
-            elif command_type == "usbmux_forwarder_close":
-                usbmux_forward_close(id, res['local_port'], writer)
-                continue
-
-            # Now come the device targetted functions
-            device_id = res['device_id']
-            with create_using_usbmux(device_id) as lockdown:
-                if command_type == "install_app":
-                    install_app(id, lockdown, res['app_path'], res['install_mode'], writer)
-                    continue
-                elif command_type == "auto_mount_image":
-                    auto_mount_image(id, lockdown, writer)
-                    continue
-                elif command_type == "debugserver_connect":
-                    port = res['port'] if 'port' in res else 0
-                    debugserver_connect(id, lockdown, port, writer)
-                    continue
-
-        except Exception as e:
-            reply = {"request": command, "state": "failed", "error": repr(e), "backtrace": traceback.format_exc()}
-            write_dispatcher.write_reply(writer, reply)
+        client_socket, client_address = server.accept()
+        read_dispatcher.add_socket(client_socket, client_address)
 
 main()

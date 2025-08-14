@@ -1,9 +1,10 @@
 package io.github.berstanio.pymobiledevice3.ipc;
 
+import io.github.berstanio.pymobiledevice3.daemon.DaemonHandler;
 import io.github.berstanio.pymobiledevice3.data.DebugServerConnection;
-import io.github.berstanio.pymobiledevice3.data.PyMobileDevice3Error;
 import io.github.berstanio.pymobiledevice3.data.DeviceInfo;
 import io.github.berstanio.pymobiledevice3.data.InstallMode;
+import io.github.berstanio.pymobiledevice3.data.PyMobileDevice3Error;
 import io.github.berstanio.pymobiledevice3.data.USBMuxForwarder;
 import io.github.berstanio.pymobiledevice3.venv.PyInstallation;
 import io.github.berstanio.pymobiledevice3.venv.PyInstallationHandler;
@@ -16,10 +17,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
-import java.net.InetAddress;
-import java.net.ServerSocket;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,9 +30,6 @@ public class PyMobileDevice3IPC implements Closeable {
 
     private static final boolean DEBUG = System.getProperty("java.pymobiledevice3.debug") != null;
 
-    private final PyInstallation installation;
-    private final Process process;
-    private final ServerSocket serverSocket;
     private final Socket socket;
     private final BufferedReader reader;
     private final PrintWriter writer;
@@ -48,21 +43,12 @@ public class PyMobileDevice3IPC implements Closeable {
 
     private boolean destroyed = false;
 
-    public PyMobileDevice3IPC(PyInstallation installation) throws IOException {
-        this.installation = installation;
-        serverSocket = new ServerSocket(0, 50, InetAddress.getByName("localhost"));
-        int port = serverSocket.getLocalPort();
-        ProcessBuilder pb = new ProcessBuilder()
-                .command(installation.getPythonExecutable().getAbsolutePath() , "-u", installation.getHandler().getAbsolutePath(), String.valueOf(port));
+    public PyMobileDevice3IPC() throws IOException {
+        Socket daemonSocket = DaemonHandler.getDaemonSocket();
+        if (daemonSocket == null)
+            throw new IllegalStateException("Daemon is not running");
 
-        if (DEBUG)
-            pb.inheritIO();
-        else
-            pb.redirectErrorStream(true);
-
-        process = pb.start();
-
-        socket = serverSocket.accept();
+        socket = daemonSocket;
         reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
         writer = new PrintWriter(socket.getOutputStream(), true);
 
@@ -84,9 +70,8 @@ public class PyMobileDevice3IPC implements Closeable {
                 try {
                     String line = reader.readLine();
                     if (line == null) {
-                        String log = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
                         for (CompletableFuture<?> future : futures.values()) {
-                            future.completeExceptionally(new PyMobileDevice3Error("Python process died: " + log));
+                            future.completeExceptionally(new PyMobileDevice3Error("Python process died"));
                         }
 
                         close();
@@ -257,7 +242,7 @@ public class PyMobileDevice3IPC implements Closeable {
         object.put("port", port);
         return createRequest(object, (future, jsonObject) -> {
             if (jsonObject.getString("state").equals("failed_tunneld")) {
-                future.completeExceptionally(new PyMobileDevice3Error("No tunneld instance for device " + info.getUniqueDeviceId() + " found. Have you started the service with `sudo " + installation.getPythonExecutable().getAbsolutePath() + " -m pymobiledevice3 remote tunneld`?"));
+                future.completeExceptionally(new PyMobileDevice3Error("No tunneld instance for device " + info.getUniqueDeviceId() + " found."));
                 return;
             }
             JSONObject result = jsonObject.getJSONObject("result");
@@ -296,9 +281,19 @@ public class PyMobileDevice3IPC implements Closeable {
         });
     }
 
+    public CompletableFuture<Void> forceKillDaemon() {
+        JSONObject object = new JSONObject();
+        object.put("id", commandId.getAndIncrement());
+        object.put("command", "exit");
+        if (!writeQueue.offer(object.toString()))
+            return CompletableFuture.failedFuture(new PyMobileDevice3Error("Write queue overflow"));
+        return CompletableFuture.completedFuture(null);
+    }
+
     public static void main(String[] args) throws IOException {
         PyInstallation installation = PyInstallationHandler.install(new File("build/pyenv/"));
-        try (PyMobileDevice3IPC ipc = new PyMobileDevice3IPC(installation)) {
+        DaemonHandler.startDaemon(installation);
+        try (PyMobileDevice3IPC ipc = new PyMobileDevice3IPC()) {
             //JSONObject object = ipc.decodePList(new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app/Info.plist")).join();
             //System.out.println(object.getString("CFBundleExecutable"));
             //for (DeviceInfo info : ipc.listDevices().join())
@@ -308,6 +303,8 @@ public class PyMobileDevice3IPC implements Closeable {
             DebugServerConnection connection = ipc.debugServerConnect(info, 0).join();
 
             ipc.debugServerClose(connection).join();
+
+            ipc.forceKillDaemon().join();
         }
     }
 
@@ -322,9 +319,6 @@ public class PyMobileDevice3IPC implements Closeable {
             writeThread.join();
 
             socket.close();
-            serverSocket.close();
-            process.destroyForcibly();
-            process.onExit().join();
             commandResults.clear();
             writeQueue.clear();
 
