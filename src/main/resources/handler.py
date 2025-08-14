@@ -19,12 +19,8 @@ from pymobiledevice3.usbmux import *
 from pymobiledevice3.lockdown import create_using_usbmux
 import plistlib
 
-active_debug_server: dict[int, tuple[LockdownTcpForwarder, Thread]] = {}
-active_usbmux_forwarder: dict[int, tuple[UsbmuxTcpForwarder, Thread]] = {}
-
 class WriteDispatcher:
-    def __init__(self, writer):
-        self.writer = writer
+    def __init__(self):
         self.write_queue = queue.Queue()
         self.shutdown_event = threading.Event()
         self.write_thread = threading.Thread(target=self._write_worker, daemon=True)
@@ -34,29 +30,34 @@ class WriteDispatcher:
         try:
             while True:
                 try:
-                    message = self.write_queue.get()
+                    writer, message = self.write_queue.get()
                     if message is None:
                         break
 
-                    self.writer.write(str(message))
-                    self.writer.write("\n")
-                    self.writer.flush()
+                    writer.write(str(message))
+                    writer.write("\n")
+                    writer.flush()
 
                 except Exception as e:
                     print(f"Write thread error: {e}")
-                    break
+                    continue
         finally:
             self.shutdown_event.set()
 
-    def write_reply(self, reply: dict):
+    def write_reply(self, writer, reply: dict):
         if self.shutdown_event.is_set():
             return
-        print("Sending packet: " + str(reply))
-        self.write_queue.put(reply)
+        print("Sending packet: " + str(reply) + " to " + str(writer.fileno()))
+        self.write_queue.put((writer, reply))
 
     def shutdown(self):
         self.write_queue.put(None)
         self.write_thread.join()
+
+
+active_debug_server: dict[int, tuple[LockdownTcpForwarder, Thread]] = {}
+active_usbmux_forwarder: dict[int, tuple[UsbmuxTcpForwarder, Thread]] = {}
+write_dispatcher = WriteDispatcher()
 
 
 def list_devices(id, writer):
@@ -69,9 +70,7 @@ def list_devices(id, writer):
 
     reply = {"id": id, "state": "completed", "result": devices}
 
-    print("Collected results: " + str(reply))
-
-    writer.write_reply(reply)
+    write_dispatcher.write_reply(writer, reply)
 
 def list_devices_udid(id, writer):
     devices = []
@@ -80,18 +79,16 @@ def list_devices_udid(id, writer):
 
     reply = {"id": id, "state": "completed", "result": devices}
 
-    print("Collected results: " + str(reply))
-
-    writer.write_reply(reply)
+    write_dispatcher.write_reply(writer, reply)
 
 def get_device(id, device_id, writer):
     try:
         with create_using_usbmux(device_id, autopair=False) as lockdown:
             reply = {"id": id, "state": "completed", "result": lockdown.short_info}
-            writer.write_reply(reply)
+            write_dispatcher.write_reply(writer, reply)
     except NoDeviceConnectedError | DeviceNotFoundError:
         reply = {"id": id, "state": "failed_expected"}
-        writer.write_reply(reply)
+        write_dispatcher.write_reply(writer, reply)
 
 def install_app(id, lockdown_client, path, mode, writer):
     with InstallationProxyService(lockdown=lockdown_client) as installer:
@@ -99,7 +96,7 @@ def install_app(id, lockdown_client, path, mode, writer):
 
         def progress_handler(progress, *args):
             reply = {"id": id, "state": "progress", "progress": progress}
-            writer.write_reply(reply)
+            write_dispatcher.write_reply(writer, reply)
             return
 
         if mode == "INSTALL":
@@ -119,7 +116,7 @@ def install_app(id, lockdown_client, path, mode, writer):
         res = installer.lookup(options={"BundleIDs" : [bundle_identifier]})
 
         reply = {"id": id, "state": "completed", "result": res[bundle_identifier]["Path"]}
-        writer.write_reply(reply)
+        write_dispatcher.write_reply(writer, reply)
 
         print("Installed bundle: " + str(bundle_identifier))
 
@@ -127,7 +124,7 @@ def decode_plist(id, path, writer):
     with open(path, 'rb') as f:
         plist_data = plistlib.load(f)
         reply = {"id": id, "state": "completed", "result": plist_data}
-        writer.write_reply(reply)
+        write_dispatcher.write_reply(writer, reply)
         return
 
 def auto_mount_image(id, lockdown, writer):
@@ -136,7 +133,7 @@ def auto_mount_image(id, lockdown, writer):
     except AlreadyMountedError:
         pass
     reply = {"id": id, "state": "completed"}
-    writer.write_reply(reply)
+    write_dispatcher.write_reply(writer, reply)
 
 
 def debugserver_connect(id, lockdown, port, writer):
@@ -146,7 +143,7 @@ def debugserver_connect(id, lockdown, port, writer):
             raise TunneldConnectionError()
     except TunneldConnectionError:
         reply = {"id":id, "state": "failed_tunneld"}
-        writer.write_reply(reply)
+        write_dispatcher.write_reply(writer, reply)
         return
 
     if Version(discovery_service.product_version) < Version('17.0'):
@@ -171,7 +168,7 @@ def debugserver_connect(id, lockdown, port, writer):
         "host": "127.0.0.1",
         "port": selected_port
     }}
-    writer.write_reply(reply)
+    write_dispatcher.write_reply(writer, reply)
 
 
 def debugserver_close(id, port, writer):
@@ -184,7 +181,7 @@ def debugserver_close(id, port, writer):
         print(f"Joining debugserver thread {port} timed out")
 
     reply = {"id": id, "state": "completed"}
-    writer.write_reply(reply)
+    write_dispatcher.write_reply(writer, reply)
 
 
 def usbmux_forward_open(id, udid, remote_port, local_port, writer):
@@ -208,7 +205,7 @@ def usbmux_forward_open(id, udid, remote_port, local_port, writer):
         "local_port": selected_port,
         "remote_port": remote_port
     }}
-    writer.write_reply(reply)
+    write_dispatcher.write_reply(writer, reply)
 
 
 def usbmux_forward_close(id, local_port, writer):
@@ -221,7 +218,7 @@ def usbmux_forward_close(id, local_port, writer):
         print(f"Joining usbmux thread {local_port} timed out")
 
     reply = {"id": id, "state": "completed"}
-    writer.write_reply(reply)
+    write_dispatcher.write_reply(writer, reply)
 
 
 def main():
@@ -236,8 +233,6 @@ def main():
 
     reader = sock.makefile('r')
     writer = sock.makefile('w')
-
-    write_dispatcher = WriteDispatcher(writer)
 
     while True:
         command = reader.readline().strip()
@@ -257,44 +252,44 @@ def main():
                 sock.close()
                 sys.exit(0)
             elif command_type == "list_devices":
-                list_devices(id, write_dispatcher)
+                list_devices(id, writer)
                 continue
             elif command_type == "list_devices_udid":
-                list_devices_udid(id, write_dispatcher)
+                list_devices_udid(id, writer)
                 continue
             elif command_type == "get_device":
                 device_id = res['device_id'] if 'device_id' in res else None
-                get_device(id, device_id, write_dispatcher)
+                get_device(id, device_id, writer)
                 continue
             elif command_type == "decode_plist":
-                decode_plist(id, res['plist_path'], write_dispatcher)
+                decode_plist(id, res['plist_path'], writer)
                 continue
             elif command_type == "debugserver_close":
-                debugserver_close(id, res['port'], write_dispatcher)
+                debugserver_close(id, res['port'], writer)
                 continue
             elif command_type == "usbmux_forwarder_open":
-                usbmux_forward_open(id, res['device_id'], res['remote_port'], res['local_port'], write_dispatcher)
+                usbmux_forward_open(id, res['device_id'], res['remote_port'], res['local_port'], writer)
                 continue
             elif command_type == "usbmux_forwarder_close":
-                usbmux_forward_close(id, res['local_port'], write_dispatcher)
+                usbmux_forward_close(id, res['local_port'], writer)
                 continue
 
             # Now come the device targetted functions
             device_id = res['device_id']
             with create_using_usbmux(device_id) as lockdown:
                 if command_type == "install_app":
-                    install_app(id, lockdown, res['app_path'], res['install_mode'], write_dispatcher)
+                    install_app(id, lockdown, res['app_path'], res['install_mode'], writer)
                     continue
                 elif command_type == "auto_mount_image":
-                    auto_mount_image(id, lockdown, write_dispatcher)
+                    auto_mount_image(id, lockdown, writer)
                     continue
                 elif command_type == "debugserver_connect":
                     port = res['port'] if 'port' in res else 0
-                    debugserver_connect(id, lockdown, port, write_dispatcher)
+                    debugserver_connect(id, lockdown, port, writer)
                     continue
 
         except Exception as e:
             reply = {"request": command, "state": "failed", "error": repr(e), "backtrace": traceback.format_exc()}
-            write_dispatcher.write_reply(reply)
+            write_dispatcher.write_reply(writer, reply)
 
 main()
