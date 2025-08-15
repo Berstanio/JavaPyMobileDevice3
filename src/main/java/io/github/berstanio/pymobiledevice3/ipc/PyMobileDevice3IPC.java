@@ -339,12 +339,8 @@ public class PyMobileDevice3IPC implements Closeable {
             DaemonHandler.startDaemon(installation);
         }
         try (PyMobileDevice3IPC ipc = new PyMobileDevice3IPC()) {
-            //JSONObject object = ipc.decodePList(new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app/Info.plist")).join();
-            //System.out.println(object.getString("CFBundleExecutable"));
-            //for (DeviceInfo info : ipc.listDevices().join())
             ipc.ensureTunneldRunning().join();
 
-            //CompletableFuture<String> future = ipc.installApp(ipc.getDevice(null).join(), new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app"), InstallMode.UPGRADE, progress -> System.out.println("Progress: " + progress + "%"));
             DeviceInfo info = ipc.getDevice(null).join();
             DebugServerConnection connection = ipc.debugServerConnect(info, 0).join();
 
