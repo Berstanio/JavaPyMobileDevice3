@@ -97,24 +97,17 @@ public class DaemonHandler {
         pb.redirectOutput(getLogFile());
         pb.start();
 
-        try (WatchService watchService = FileSystems.getDefault().newWatchService()){
-            portFile.toPath().getParent().register(watchService, StandardWatchEventKinds.ENTRY_MODIFY);
-            while (true) {
-                WatchKey key = watchService.take();
-                for (WatchEvent<?> event : key.pollEvents()) {
-                    WatchEvent.Kind<?> kind = event.kind();
-                    if (kind != StandardWatchEventKinds.ENTRY_MODIFY)
-                        continue;
-                    Path modifiedFile = (Path) event.context();
-                    if (!modifiedFile.toString().equals(portFile.getName()))
-                        continue;
-                    if (getDaemonPort() != -1)
-                        return;
-                }
+        for (int i = 0; i < 60; i++) {
+            if (isDaemonRunning()) {
+                return;
             }
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
         }
+        throw new RuntimeException("Failed to start Daemon - timeout");
     }
 
     private static String getUnixUserId() {
