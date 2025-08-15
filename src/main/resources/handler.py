@@ -29,6 +29,18 @@ from pymobiledevice3.usbmux import *
 from pymobiledevice3.lockdown import create_using_usbmux
 import plistlib
 
+class IPCClient:
+    def __init__(self, sock, address):
+        self.sock = sock
+        self.read_file = sock.makefile('r')
+        self.write_file = sock.makefile('w')
+        self.address = address
+
+    def close(self):
+        self.sock.close()
+        self.read_file.close()
+        self.write_file.close()
+
 class WriteDispatcher:
     def __init__(self):
         self.write_queue = queue.Queue()
@@ -54,11 +66,11 @@ class WriteDispatcher:
         finally:
             self.shutdown_event.set()
 
-    def write_reply(self, writer, reply: dict):
+    def write_reply(self, ipc_client, reply: dict):
         if self.shutdown_event.is_set():
             return
-        print("Sending packet: " + str(reply) + " to " + str(writer.fileno()))
-        self.write_queue.put((writer, reply))
+        print(f"{ipc_client.address}: Sending packet: {str(reply)}")
+        self.write_queue.put((ipc_client.write_file, reply))
 
     def shutdown(self):
         self.write_queue.put(None)
@@ -67,9 +79,7 @@ class WriteDispatcher:
 class ReadDispatcher:
     def __init__(self):
         self.socket_list = []
-        self.addresses = {}
-        self.read_files = {}
-        self.write_files = {}
+        self.clients = {}
         self.shutdown_event = threading.Event()
         self.read_thread = threading.Thread(target=self._read_worker, daemon=True, name="Python-ReadDispatcher")
         self.read_thread.start()
@@ -82,22 +92,21 @@ class ReadDispatcher:
 
                     if self.shutdown_event.is_set():
                         for sock in self.socket_list:
-                            self.remove_socket(sock)
+                            self.remove_client(self.clients[sock])
                         return
 
                     for exception_socket in exception_sockets:
-                        self.remove_socket(exception_socket)
+                        self.remove_client(self.clients[exception_socket])
 
                     for ready_socket in ready_sockets:
-                        reader = self.read_files[ready_socket]
-                        writer = self.write_files[ready_socket]
-                        command = reader.readline().strip()
+                        ipc_client = self.clients[ready_socket]
+                        command = ipc_client.read_file.readline().strip()
                         if not command:
-                            self.remove_socket(ready_socket)
+                            self.remove_client(ipc_client)
                             continue
-                        print("Received command: {}".format(command))
+                        print(f"{ipc_client.address}: Received command: {command}")
 
-                        handle_command(command, writer)
+                        handle_command(command, ipc_client)
 
                 except Exception as e:
                     print(f"Read thread error: {e}")
@@ -105,20 +114,16 @@ class ReadDispatcher:
         finally:
             self.shutdown_event.set()
 
-    def remove_socket(self, sock):
-        self.socket_list.remove(sock)
-        self.read_files.pop(sock).close()
-        self.write_files.pop(sock).close()
-        address = self.addresses.pop(sock)
-        sock.close()
-        print(f"Disconnected {address}")
+    def remove_client(self, ipc_client):
+        self.socket_list.remove(ipc_client.sock)
+        self.clients.pop(ipc_client.sock)
+        ipc_client.close()
+        print(f"Disconnected {ipc_client.address}")
 
-    def add_socket(self, sock, address):
-        self.read_files[sock] = sock.makefile('r')
-        self.write_files[sock] = sock.makefile('w')
-        self.addresses[sock] = address
-        self.socket_list.append(sock)
-        print(f"Connected {address}")
+    def add_client(self, ipc_client):
+        self.clients[ipc_client.sock] = ipc_client
+        self.socket_list.append(ipc_client.sock)
+        print(f"Connected {ipc_client.address}")
 
 
     def shutdown(self):
@@ -131,7 +136,7 @@ write_dispatcher = WriteDispatcher()
 read_dispatcher = ReadDispatcher()
 
 
-def list_devices(id, writer):
+def list_devices(id, ipc_client):
     devices = []
     for device in usbmux.list_devices():
         udid = device.serial
@@ -141,33 +146,33 @@ def list_devices(id, writer):
 
     reply = {"id": id, "state": "completed", "result": devices}
 
-    write_dispatcher.write_reply(writer, reply)
+    write_dispatcher.write_reply(ipc_client, reply)
 
-def list_devices_udid(id, writer):
+def list_devices_udid(id, ipc_client):
     devices = []
     for device in usbmux.list_devices():
         devices.append(device.serial)
 
     reply = {"id": id, "state": "completed", "result": devices}
 
-    write_dispatcher.write_reply(writer, reply)
+    write_dispatcher.write_reply(ipc_client, reply)
 
-def get_device(id, device_id, writer):
+def get_device(id, device_id, ipc_client):
     try:
         with create_using_usbmux(device_id, autopair=False) as lockdown:
             reply = {"id": id, "state": "completed", "result": lockdown.short_info}
-            write_dispatcher.write_reply(writer, reply)
+            write_dispatcher.write_reply(ipc_client, reply)
     except NoDeviceConnectedError | DeviceNotFoundError:
         reply = {"id": id, "state": "failed_expected"}
-        write_dispatcher.write_reply(writer, reply)
+        write_dispatcher.write_reply(ipc_client, reply)
 
-def install_app(id, lockdown_client, path, mode, writer):
+def install_app(id, lockdown_client, path, mode, ipc_client):
     with InstallationProxyService(lockdown=lockdown_client) as installer:
         options = {"PackageType": "Developer"}
 
         def progress_handler(progress, *args):
             reply = {"id": id, "state": "progress", "progress": progress}
-            write_dispatcher.write_reply(writer, reply)
+            write_dispatcher.write_reply(ipc_client, reply)
             return
 
         if mode == "INSTALL":
@@ -187,24 +192,24 @@ def install_app(id, lockdown_client, path, mode, writer):
         res = installer.lookup(options={"BundleIDs" : [bundle_identifier]})
 
         reply = {"id": id, "state": "completed", "result": res[bundle_identifier]["Path"]}
-        write_dispatcher.write_reply(writer, reply)
+        write_dispatcher.write_reply(ipc_client, reply)
 
         print("Installed bundle: " + str(bundle_identifier))
 
-def decode_plist(id, path, writer):
+def decode_plist(id, path, ipc_client):
     with open(path, 'rb') as f:
         plist_data = plistlib.load(f)
         reply = {"id": id, "state": "completed", "result": plist_data}
-        write_dispatcher.write_reply(writer, reply)
+        write_dispatcher.write_reply(ipc_client, reply)
         return
 
-def auto_mount_image(id, lockdown, writer):
+def auto_mount_image(id, lockdown, ipc_client):
     try:
         asyncio.run(auto_mount(lockdown))
     except AlreadyMountedError:
         pass
     reply = {"id": id, "state": "completed"}
-    write_dispatcher.write_reply(writer, reply)
+    write_dispatcher.write_reply(ipc_client, reply)
 
 
 def start_tunneld():
@@ -261,14 +266,14 @@ def ensure_tunneld_running():
     else:
         print("tunneld is already running")
 
-def debugserver_connect(id, lockdown, port, writer):
+def debugserver_connect(id, lockdown, port, ipc_client):
     try:
         discovery_service = get_tunneld_device_by_udid(lockdown.udid)
         if not discovery_service:
             raise TunneldConnectionError()
     except TunneldConnectionError:
         reply = {"id":id, "state": "failed_tunneld"}
-        write_dispatcher.write_reply(writer, reply)
+        write_dispatcher.write_reply(ipc_client, reply)
         return
 
     if Version(discovery_service.product_version) < Version('17.0'):
@@ -293,10 +298,10 @@ def debugserver_connect(id, lockdown, port, writer):
         "host": "127.0.0.1",
         "port": selected_port
     }}
-    write_dispatcher.write_reply(writer, reply)
+    write_dispatcher.write_reply(ipc_client, reply)
 
 
-def debugserver_close(id, port, writer):
+def debugserver_close(id, port, ipc_client):
     forwarder, thread = active_debug_server.pop(port)
     forwarder.stop()
 
@@ -306,10 +311,10 @@ def debugserver_close(id, port, writer):
         print(f"Joining debugserver thread {port} timed out")
 
     reply = {"id": id, "state": "completed"}
-    write_dispatcher.write_reply(writer, reply)
+    write_dispatcher.write_reply(ipc_client, reply)
 
 
-def usbmux_forward_open(id, udid, remote_port, local_port, writer):
+def usbmux_forward_open(id, udid, remote_port, local_port, ipc_client):
     listen_event = threading.Event()
 
     forwarder = UsbmuxTcpForwarder(udid, remote_port, local_port, listening_event=listen_event)
@@ -330,10 +335,10 @@ def usbmux_forward_open(id, udid, remote_port, local_port, writer):
         "local_port": selected_port,
         "remote_port": remote_port
     }}
-    write_dispatcher.write_reply(writer, reply)
+    write_dispatcher.write_reply(ipc_client, reply)
 
 
-def usbmux_forward_close(id, local_port, writer):
+def usbmux_forward_close(id, local_port, ipc_client):
     forwarder, thread = active_usbmux_forwarder.pop(local_port)
     forwarder.stop()
 
@@ -343,69 +348,69 @@ def usbmux_forward_close(id, local_port, writer):
         print(f"Joining usbmux thread {local_port} timed out")
 
     reply = {"id": id, "state": "completed"}
-    write_dispatcher.write_reply(writer, reply)
+    write_dispatcher.write_reply(ipc_client, reply)
 
 
-def handle_command(command, writer):
+def handle_command(command, ipc_client):
     try:
         res = json.loads(command)
         id = res['id']
 
         command_type = res['command']
         if command_type == "exit":
-            print("Exiting by request")
+            print(f"Exiting by request from {ipc_client.address}")
             atexit._run_exitfuncs()
             os._exit(0)
         elif command_type == "list_devices":
-            list_devices(id, writer)
+            list_devices(id, ipc_client)
             return
         elif command_type == "list_devices_udid":
-            list_devices_udid(id, writer)
+            list_devices_udid(id, ipc_client)
             return
         elif command_type == "get_device":
             device_id = res['device_id'] if 'device_id' in res else None
-            get_device(id, device_id, writer)
+            get_device(id, device_id, ipc_client)
             return
         elif command_type == "decode_plist":
-            decode_plist(id, res['plist_path'], writer)
+            decode_plist(id, res['plist_path'], ipc_client)
             return
         elif command_type == "debugserver_close":
-            debugserver_close(id, res['port'], writer)
+            debugserver_close(id, res['port'], ipc_client)
             return
         elif command_type == "usbmux_forwarder_open":
-            usbmux_forward_open(id, res['device_id'], res['remote_port'], res['local_port'], writer)
+            usbmux_forward_open(id, res['device_id'], res['remote_port'], res['local_port'], ipc_client)
             return
         elif command_type == "usbmux_forwarder_close":
-            usbmux_forward_close(id, res['local_port'], writer)
+            usbmux_forward_close(id, res['local_port'], ipc_client)
             return
         elif command_type == "ensure_tunneld_running":
             ensure_tunneld_running()
             reply = {"id": id, "state": "completed"}
-            write_dispatcher.write_reply(writer, reply)
+            write_dispatcher.write_reply(ipc_client, reply)
             return
         elif command_type == "is_tunneld_running":
             res = is_tunneld_running()
             reply = {"id": id, "state": "completed", "result": res}
-            write_dispatcher.write_reply(writer, reply)
+            write_dispatcher.write_reply(ipc_client, reply)
             return
 
         # Now come the device targetted functions
         device_id = res['device_id']
         with create_using_usbmux(device_id) as lockdown:
             if command_type == "install_app":
-                install_app(id, lockdown, res['app_path'], res['install_mode'], writer)
+                install_app(id, lockdown, res['app_path'], res['install_mode'], ipc_client)
                 return
             elif command_type == "auto_mount_image":
-                auto_mount_image(id, lockdown, writer)
+                auto_mount_image(id, lockdown, ipc_client)
                 return
             elif command_type == "debugserver_connect":
                 port = res['port'] if 'port' in res else 0
-                debugserver_connect(id, lockdown, port, writer)
+                debugserver_connect(id, lockdown, port, ipc_client)
                 return
 
     except Exception as e:
         reply = {"request": command, "state": "failed", "error": repr(e), "backtrace": traceback.format_exc()}
-        write_dispatcher.write_reply(writer, reply)
+        write_dispatcher.write_reply(ipc_client, reply)
 
 
 def main():
@@ -430,6 +435,6 @@ def main():
     print(f"Start listening on port {port}")
     while True:
         client_socket, client_address = server.accept()
-        read_dispatcher.add_socket(client_socket, client_address)
+        read_dispatcher.add_client(IPCClient(client_socket, client_address))
 
 main()
