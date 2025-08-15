@@ -18,6 +18,11 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -30,6 +35,9 @@ public class PyMobileDevice3IPC implements Closeable {
 
     private static final boolean DEBUG = System.getProperty("java.pymobiledevice3.debug") != null;
 
+    public static final int PROTOCOL_VERSION = 1;
+
+    private final int daemonProtocolVersion;
     private final Socket socket;
     private final BufferedReader reader;
     private final PrintWriter writer;
@@ -49,6 +57,12 @@ public class PyMobileDevice3IPC implements Closeable {
             throw new IllegalStateException("Daemon is not running");
 
         socket = daemonSocket;
+
+        socket.getOutputStream().write(PROTOCOL_VERSION);
+        socket.getOutputStream().flush();
+
+        daemonProtocolVersion = readVersion();
+
         reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
         writer = new PrintWriter(socket.getOutputStream(), true);
 
@@ -99,6 +113,15 @@ public class PyMobileDevice3IPC implements Closeable {
         }, "PyMobileDevice3IPC-ReadDispatcher");
         readThread.setDaemon(true);
         readThread.start();
+    }
+
+    private int readVersion() throws IOException {
+        try {
+            socket.setSoTimeout(2000);
+            return socket.getInputStream().read();
+        } finally {
+            socket.setSoTimeout(0);
+        }
     }
 
     private <U> CompletableFuture<U> createRequest(JSONObject request, BiConsumer<CompletableFuture<U>, JSONObject> handler) {
@@ -304,6 +327,10 @@ public class PyMobileDevice3IPC implements Closeable {
         return createRequest(object, (future, jsonObject) -> {
             future.complete(null);
         });
+    }
+
+    public int getDaemonProtocolVersion() {
+        return daemonProtocolVersion;
     }
 
     public static void main(String[] args) throws IOException {

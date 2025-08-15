@@ -29,12 +29,15 @@ from pymobiledevice3.usbmux import *
 from pymobiledevice3.lockdown import create_using_usbmux
 import plistlib
 
+VERSION: int
+
 class IPCClient:
-    def __init__(self, sock, address):
+    def __init__(self, sock, address, version):
         self.sock = sock
         self.read_file = sock.makefile('r')
         self.write_file = sock.makefile('w')
         self.address = address
+        self.version = version
 
     def close(self):
         self.sock.close()
@@ -123,7 +126,7 @@ class ReadDispatcher:
     def add_client(self, ipc_client):
         self.clients[ipc_client.sock] = ipc_client
         self.socket_list.append(ipc_client.sock)
-        print(f"Connected {ipc_client.address}")
+        print(f"Connected {ipc_client.address} with version {ipc_client.version}")
 
 
     def shutdown(self):
@@ -350,6 +353,9 @@ def usbmux_forward_close(id, local_port, ipc_client):
     reply = {"id": id, "state": "completed"}
     write_dispatcher.write_reply(ipc_client, reply)
 
+def get_version(id, ipc_client):
+    reply = {"id": id, "state": "completed", "result": VERSION}
+    write_dispatcher.write_reply(ipc_client, reply)
 
 def handle_command(command, ipc_client):
     try:
@@ -393,6 +399,9 @@ def handle_command(command, ipc_client):
             reply = {"id": id, "state": "completed", "result": res}
             write_dispatcher.write_reply(ipc_client, reply)
             return
+        elif command_type == "get_version":
+            get_version(id, ipc_client)
+            return
 
         # Now come the device targetted functions
         device_id = res['device_id']
@@ -414,16 +423,19 @@ def handle_command(command, ipc_client):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python handler.py <port_file>")
+    if len(sys.argv) < 3:
+        print("Usage: python handler.py <protocol_version> <port_file>")
         sys.exit(1)
+
+    global VERSION
+    VERSION = int(sys.argv[1])
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(('localhost', 0))
     server.listen(5)
 
     port = server.getsockname()[1]
-    path = sys.argv[1]
+    path = sys.argv[2]
 
     with open(path, "w") as f:
         f.write(str(port))
@@ -435,6 +447,16 @@ def main():
     print(f"Start listening on port {port}")
     while True:
         client_socket, client_address = server.accept()
-        read_dispatcher.add_client(IPCClient(client_socket, client_address))
+        try:
+            reads, _, _ = select.select([client_socket], [], [], 2)
+            if client_socket not in reads:
+                raise RuntimeError()
+            java_protocol_version = client_socket.recv(1)[0]
+            client_socket.send(bytes([VERSION]))
+
+            read_dispatcher.add_client(IPCClient(client_socket, client_address, java_protocol_version))
+        except Exception:
+            print(f"{client_address}: Failed to send version")
+
 
 main()

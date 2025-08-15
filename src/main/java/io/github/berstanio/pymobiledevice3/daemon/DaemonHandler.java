@@ -2,6 +2,7 @@ package io.github.berstanio.pymobiledevice3.daemon;
 
 import com.badlogic.gdx.jnigen.commons.HostDetection;
 import com.badlogic.gdx.jnigen.commons.Os;
+import io.github.berstanio.pymobiledevice3.ipc.PyMobileDevice3IPC;
 import io.github.berstanio.pymobiledevice3.venv.PyInstallation;
 
 import java.io.BufferedReader;
@@ -89,7 +90,8 @@ public class DaemonHandler {
         File portFile = getPortFile();
         Files.deleteIfExists(portFile.toPath());
         ProcessBuilder pb = new ProcessBuilder()
-                .command(installation.getPythonExecutable().getAbsolutePath() , "-u", installation.getHandler().getAbsolutePath(), portFile.getAbsolutePath());
+                .command(installation.getPythonExecutable().getAbsolutePath() , "-u", installation.getHandler().getAbsolutePath(), String.valueOf(
+                        PyMobileDevice3IPC.PROTOCOL_VERSION), portFile.getAbsolutePath());
 
         pb.redirectErrorStream(true);
         pb.redirectOutput(getLogFile());
