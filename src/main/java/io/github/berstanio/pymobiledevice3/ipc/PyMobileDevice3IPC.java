@@ -307,8 +307,10 @@ public class PyMobileDevice3IPC implements Closeable {
     }
 
     public static void main(String[] args) throws IOException {
-        PyInstallation installation = PyInstallationHandler.install(new File("build/pyenv/"));
-        DaemonHandler.startDaemon(installation);
+        if (!DaemonHandler.isDaemonRunning()) {
+            PyInstallation installation = PyInstallationHandler.install(new File("build/pyenv/"));
+            DaemonHandler.startDaemon(installation);
+        }
         try (PyMobileDevice3IPC ipc = new PyMobileDevice3IPC()) {
             //JSONObject object = ipc.decodePList(new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app/Info.plist")).join();
             //System.out.println(object.getString("CFBundleExecutable"));
