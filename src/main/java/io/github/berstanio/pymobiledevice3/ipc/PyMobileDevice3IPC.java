@@ -290,6 +290,22 @@ public class PyMobileDevice3IPC implements Closeable {
         return CompletableFuture.completedFuture(null);
     }
 
+    public CompletableFuture<Boolean> isTunneldRunning() {
+        JSONObject object = new JSONObject();
+        object.put("command", "is_tunneld_running");
+        return createRequest(object, (future, jsonObject) -> {
+            future.complete(jsonObject.getBoolean("result"));
+        });
+    }
+
+    public CompletableFuture<Void> ensureTunneldRunning() {
+        JSONObject object = new JSONObject();
+        object.put("command", "ensure_tunneld_running");
+        return createRequest(object, (future, jsonObject) -> {
+            future.complete(null);
+        });
+    }
+
     public static void main(String[] args) throws IOException {
         PyInstallation installation = PyInstallationHandler.install(new File("build/pyenv/"));
         DaemonHandler.startDaemon(installation);
@@ -297,6 +313,7 @@ public class PyMobileDevice3IPC implements Closeable {
             //JSONObject object = ipc.decodePList(new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app/Info.plist")).join();
             //System.out.println(object.getString("CFBundleExecutable"));
             //for (DeviceInfo info : ipc.listDevices().join())
+            ipc.ensureTunneldRunning().join();
 
             //CompletableFuture<String> future = ipc.installApp(ipc.getDevice(null).join(), new File("/Volumes/ExternalSSD/IdeaProjects/MOE-Upstream/moe/samples-java/Calculator/ios/build/moe/xcodebuild/Release-iphoneos/ios.app"), InstallMode.UPGRADE, progress -> System.out.println("Progress: " + progress + "%"));
             DeviceInfo info = ipc.getDevice(null).join();

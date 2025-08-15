@@ -1,10 +1,14 @@
 package io.github.berstanio.pymobiledevice3.venv;
 
+import com.badlogic.gdx.jnigen.commons.HostDetection;
+import com.badlogic.gdx.jnigen.commons.Os;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
 public class PyInstallationHandler {
@@ -26,7 +30,8 @@ public class PyInstallationHandler {
                 // Env is valid. Copy files again, just in case
                 copyFiles(directory);
                 installRequirements(directory);
-                return new PyInstallation(venv, new File(venv, PYTHON_PATH), new File(directory, HANDLER_NAME));
+
+                return finalizeInstallation(directory);
             }
             if (!venv.delete())
                 throw new IllegalStateException(venv.getAbsolutePath() + " exists, is invalid and cannot be deleted");
@@ -66,7 +71,38 @@ public class PyInstallationHandler {
 
         installRequirements(directory);
 
-        return new PyInstallation(venv,  new File(venv, PYTHON_PATH), new File(directory, HANDLER_NAME));
+        return finalizeInstallation(directory);
+    }
+
+    private static PyInstallation finalizeInstallation(File directory) {
+        if (HostDetection.os == Os.MacOsX) {
+            // MacOS is dumb and launching tunneld with osascript looses file perm chain.
+            // So if we install venv on external hard drive, it will fail
+            // So we copy to temp dir, so everything has perms on it
+            File temp = copyToTempDir(directory);
+            File tmpVEnv = new File(temp, VENV_NAME);
+            return new PyInstallation(tmpVEnv, new File(tmpVEnv, PYTHON_PATH), new File(temp, HANDLER_NAME));
+        } else {
+            File venv = new File(directory, VENV_NAME);
+            return new PyInstallation(venv, new File(venv, PYTHON_PATH), new File(directory, HANDLER_NAME));
+        }
+    }
+
+    private static File copyToTempDir(File directory) {
+        try {
+            Path tempDir = Files.createTempDirectory("javapymobiledevice3");
+            Path sourceDir = directory.toPath();
+            int code = new ProcessBuilder("rsync", "-a", sourceDir + "/", tempDir + "/")
+                    .inheritIO()
+                    .start()
+                    .waitFor();
+            if (code != 0)
+                throw new IllegalStateException("Failed to copy " + directory.getAbsolutePath() + " to " + tempDir.toAbsolutePath());
+
+            return tempDir.toFile();
+        } catch (IOException | InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static void copyFiles(File directory) {

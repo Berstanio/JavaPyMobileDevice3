@@ -1,5 +1,7 @@
 package io.github.berstanio.pymobiledevice3.daemon;
 
+import com.badlogic.gdx.jnigen.commons.HostDetection;
+import com.badlogic.gdx.jnigen.commons.Os;
 import io.github.berstanio.pymobiledevice3.venv.PyInstallation;
 
 import java.io.BufferedReader;
@@ -27,14 +29,14 @@ public class DaemonHandler {
 
 
     public static File getTempDir() {
-        if (System.getProperty("os.name").toLowerCase().contains("windows"))
+        if (HostDetection.os == Os.Windows)
             return BASE_TEMP_DIR_WIN;
         else
             return BASE_TEMP_DIR_UNIX;
     }
 
     public static File getPortFile() {
-        if (System.getProperty("os.name").toLowerCase().contains("windows"))
+        if (HostDetection.os == Os.Windows)
             return WINDOWS_PORT_PATH;
         else
             return UNIX_PORT_PATH;

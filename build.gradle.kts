@@ -16,6 +16,7 @@ java {
 
 dependencies {
     api("org.json:json:20250517")
+    implementation("com.badlogicgames.jnigen:jnigen-commons:3.1.1")
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
 }

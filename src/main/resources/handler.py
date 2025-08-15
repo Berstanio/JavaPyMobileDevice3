@@ -1,8 +1,10 @@
 import atexit
 import json
 import os
+import platform
 import queue
 import select
+import subprocess
 import sys
 import threading
 import traceback
@@ -10,14 +12,19 @@ from pathlib import Path
 import asyncio
 
 from threading import Thread
+from time import sleep
+
+import requests
 from packaging.version import Version
 
 import pymobiledevice3.usbmux as usbmux
 from pymobiledevice3.exceptions import *
+from pymobiledevice3.remote.common import TunnelProtocol
 from pymobiledevice3.services.installation_proxy import InstallationProxyService
 from pymobiledevice3.services.mobile_image_mounter import auto_mount
 from pymobiledevice3.tcp_forwarder import LockdownTcpForwarder, UsbmuxTcpForwarder
-from pymobiledevice3.tunneld.api import get_tunneld_device_by_udid
+from pymobiledevice3.tunneld.api import get_tunneld_device_by_udid, TUNNELD_DEFAULT_ADDRESS
+from pymobiledevice3.tunneld.server import TunneldRunner
 from pymobiledevice3.usbmux import *
 from pymobiledevice3.lockdown import create_using_usbmux
 import plistlib
@@ -200,6 +207,60 @@ def auto_mount_image(id, lockdown, writer):
     write_dispatcher.write_reply(writer, reply)
 
 
+def start_tunneld():
+    if platform.system() == "Darwin":
+        print("Starting tunneld as process")
+        python_executable = sys.executable
+        start_script = f'do shell script "sudo {python_executable} -m pymobiledevice3 remote tunneld" with administrator privileges'
+        print("Running \"" + start_script + "\"")
+        process = subprocess.Popen(['osascript', '-e', start_script], stdout=None, stderr=None)
+        print(f"Started tunneld process with pid {process.pid}")
+    else:
+        print("Starting tunneld as thread")
+        def _worker():
+            TunneldRunner.create(*TUNNELD_DEFAULT_ADDRESS, protocol=TunnelProtocol.DEFAULT)
+
+        webserver_thread = threading.Thread(target=_worker, daemon=True, name="Python-Tunneld")
+        webserver_thread.start()
+
+    for i in range(60):
+        if is_tunneld_running():
+            print("tunneld successfully started")
+            return
+        sleep(1)
+    raise RuntimeError("Failed launching tunneld service")
+
+def is_tunneld_running():
+    try:
+        response = requests.get(f"http://{TUNNELD_DEFAULT_ADDRESS[0]}:{TUNNELD_DEFAULT_ADDRESS[1]}/hello")
+        if response.status_code != 200:
+            raise RuntimeError()
+
+        data = response.json()
+        if data.get("message") != "Hello, I'm alive":
+            raise RuntimeError()
+        # Tunneld seems running happily
+        return True
+    except Exception:
+        return False
+
+def shutdown_tunneld():
+    if is_tunneld_running():
+        try:
+            response = requests.get(f"http://{TUNNELD_DEFAULT_ADDRESS[0]}:{TUNNELD_DEFAULT_ADDRESS[1]}/shutdown")
+            if response.status_code != 200:
+                raise RuntimeError("Status code was " + str(response.status_code))
+            print("tunneld shutdown request successful")
+        except Exception as e:
+            print("Failed tunneld teardown", e)
+
+def ensure_tunneld_running():
+    if not is_tunneld_running():
+        start_tunneld()
+        print("tunneld is not running - starting")
+    else:
+        print("tunneld is already running")
+
 def debugserver_connect(id, lockdown, port, writer):
     try:
         discovery_service = get_tunneld_device_by_udid(lockdown.udid)
@@ -292,7 +353,7 @@ def handle_command(command, writer):
 
         command_type = res['command']
         if command_type == "exit":
-            print("Exciting by request")
+            print("Exiting by request")
             atexit._run_exitfuncs()
             os._exit(0)
         elif command_type == "list_devices":
@@ -316,6 +377,16 @@ def handle_command(command, writer):
             return
         elif command_type == "usbmux_forwarder_close":
             usbmux_forward_close(id, res['local_port'], writer)
+            return
+        elif command_type == "ensure_tunneld_running":
+            ensure_tunneld_running()
+            reply = {"id": id, "state": "completed"}
+            write_dispatcher.write_reply(writer, reply)
+            return
+        elif command_type == "is_tunneld_running":
+            res = is_tunneld_running()
+            reply = {"id": id, "state": "completed", "result": res}
+            write_dispatcher.write_reply(writer, reply)
             return
 
         # Now come the device targetted functions
@@ -355,6 +426,7 @@ def main():
     print(f"Written port {port} to file {path}")
 
     atexit.register(os.remove, path)
+    atexit.register(shutdown_tunneld)
     print(f"Start listening on port {port}")
     while True:
         client_socket, client_address = server.accept()
